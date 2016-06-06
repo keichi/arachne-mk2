@@ -1,17 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"github.com/Workiva/go-datastructures/queue"
 	"github.com/davecheney/profile"
-	bencode "github.com/jackpal/bencode-go"
 	metrics "github.com/rcrowley/go-metrics"
 	"log"
 	"math/rand"
 	"net"
 	"os"
+	"regexp"
 	"runtime"
 	"time"
 )
@@ -47,27 +46,16 @@ func parseNodeAddresses(nodes []byte) []*net.UDPAddr {
 	return addrs
 }
 
+var regexpNodes = regexp.MustCompile(`5:nodes208:`)
+
 func parseFindNodeResponse(b []byte) ([]byte, error) {
-	reader := bytes.NewReader(b)
-	data, err := bencode.Decode(reader)
-	if err != nil {
-		return nil, err
-	}
+	matches := regexpNodes.FindSubmatchIndex(b)
 
-	resp, ok := data.(map[string]interface{})
-	if !ok {
-		return nil, errors.New("parseFindNodeResponse")
-	}
-	r, ok := resp["r"].(map[string]interface{})
-	if !ok {
-		return nil, errors.New("parseFindNodeResponse")
-	}
-	nodes, ok := r["nodes"].(string)
-	if !ok {
+	if len(matches) != 2 {
 		return nil, errors.New("parseFindNodeResponse")
 	}
 
-	return []byte(nodes), nil
+	return b[matches[1] : matches[1]+208], nil
 }
 
 func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
