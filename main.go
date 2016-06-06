@@ -140,10 +140,10 @@ loop:
 
 			batch := new(leveldb.Batch)
 			for i, v := range addrs {
-				q.Offer(v)
 				key := []byte(resp.Response.Nodes[i*26+20 : i*26+26])
 
 				if has, _ := db.Has(key, nil); !has {
+					q.Offer(v)
 					batch.Put(key, make([]byte, 0))
 				}
 			}
