@@ -35,11 +35,15 @@ func main() {
 		panic(err)
 	}
 
+	count := 0
 	iter := db.NewIterator(nil, nil)
 	for iter.Next() {
-		key := iter.Key()
-		addr := toUDPAddr(key)
-		fmt.Println(addr)
+		// key := iter.Key()
+		// addr := toUDPAddr(key)
+		// fmt.Println(addr)
+		count += 1
 	}
 	iter.Release()
+
+	fmt.Println(count)
 }
