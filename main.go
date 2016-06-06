@@ -22,37 +22,15 @@ var boostrapNodes = []string{
 	"dht.transmissionbt.com:6881",
 }
 
-type krpcRequest struct {
-	TransactionID string            `bencode:"t"`
-	Type          string            `bencode:"y"`
-	Query         string            `bencode:"q"`
-	Arguments     map[string]string `bencode:"a"`
-}
+func buildFindNodeRequest() []byte {
+	buf := []byte("d1:ad2:i" +
+		"d20:                    6:target20:                    e" +
+		"1:q9:find_node1:t4:    1:y1:qe")
+	rand.Read(buf[12 : 12+20])
+	rand.Read(buf[43 : 43+20])
+	rand.Read(buf[83 : 83+4])
 
-func getRandomString(c int) string {
-	b := make([]byte, c)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-
-	return string(b)
-}
-
-func buildFindNodeRequest() ([]byte, error) {
-	r := krpcRequest{
-		TransactionID: getRandomString(4),
-		Type:          "q",
-		Query:         "find_node",
-		Arguments: map[string]string{
-			"id":     getRandomString(20),
-			"target": getRandomString(20),
-		},
-	}
-
-	buf := new(bytes.Buffer)
-	err := bencode.Marshal(buf, r)
-
-	return buf.Bytes(), err
+	return buf
 }
 
 func parseNodeAddresses(nodes []byte) []*net.UDPAddr {
@@ -159,7 +137,7 @@ loop:
 
 		v, _ := q.Get()
 		addr := v.(*net.UDPAddr)
-		b, _ := buildFindNodeRequest()
+		b := buildFindNodeRequest()
 
 		conn.WriteToUDP(b, addr)
 
