@@ -9,6 +9,8 @@ import (
 	bencode "github.com/jackpal/bencode-go"
 	metrics "github.com/rcrowley/go-metrics"
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/filter"
+	"github.com/syndtr/goleveldb/leveldb/opt"
 	"log"
 	"math/rand"
 	"net"
@@ -111,6 +113,8 @@ func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, db *leveldb.DB, quit chan 
 	m2 := metrics.NewMeter()
 	metrics.Register("nodesPacketPerSec", m2)
 
+	fmt.Println("Starting receive loop...")
+
 loop:
 	for {
 		select {
@@ -155,6 +159,8 @@ func sendLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
 	g := metrics.NewGauge()
 	metrics.Register("rngBufLen", g)
 
+	fmt.Println("Starting send loop...")
+
 loop:
 	for {
 		select {
@@ -184,7 +190,12 @@ func main() {
 
 	q := queue.NewRingBuffer(1 << 17)
 
-	db, err := leveldb.OpenFile("leveldb", nil)
+	o := &opt.Options{
+		Compression:        opt.NoCompression,
+		BlockCacheCapacity: 500 * 1024 * 1024,
+		Filter:             filter.NewBloomFilter(10),
+	}
+	db, err := leveldb.OpenFile("leveldb", o)
 	if err != nil {
 		panic(err)
 	}
@@ -210,9 +221,9 @@ func main() {
 	qc2 := make(chan bool)
 	go sendLoop(q, conn, qc2)
 
-	go metrics.Log(metrics.DefaultRegistry, 5*time.Second, log.New(os.Stderr, "metrics: ", log.Lmicroseconds))
+	go metrics.Log(metrics.DefaultRegistry, 10*time.Second, log.New(os.Stderr, "metrics: ", log.Lmicroseconds))
 
-	time.Sleep(1 * time.Minute)
+	time.Sleep(30 * time.Minute)
 
 	qc1 <- true
 	qc2 <- true
