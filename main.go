@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/Workiva/go-datastructures/queue"
 	"github.com/davecheney/profile"
@@ -26,15 +27,6 @@ type krpcRequest struct {
 	Type          string            `bencode:"y"`
 	Query         string            `bencode:"q"`
 	Arguments     map[string]string `bencode:"a"`
-}
-
-type krpcFindNodeResponse struct {
-	TransactionID string `bencode:"t"`
-	Type          string `bencode:"y"`
-	Response      struct {
-		ID    string `bencode:"id"`
-		Nodes string `bencode:"nodes"`
-	} `bencode:"r"`
 }
 
 func getRandomString(c int) string {
@@ -63,8 +55,7 @@ func buildFindNodeRequest() ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-func parseNodeAddresses(resp *krpcFindNodeResponse) []*net.UDPAddr {
-	nodes := resp.Response.Nodes
+func parseNodeAddresses(nodes []byte) []*net.UDPAddr {
 	var addrs []*net.UDPAddr
 
 	for i := 20; i <= len(nodes)-6; i += 26 {
@@ -78,13 +69,27 @@ func parseNodeAddresses(resp *krpcFindNodeResponse) []*net.UDPAddr {
 	return addrs
 }
 
-func parseFindNodeResponse(b []byte) (*krpcFindNodeResponse, error) {
-	resp := new(krpcFindNodeResponse)
+func parseFindNodeResponse(b []byte) ([]byte, error) {
 	reader := bytes.NewReader(b)
+	data, err := bencode.Decode(reader)
+	if err != nil {
+		return nil, err
+	}
 
-	err := bencode.Unmarshal(reader, resp)
+	resp, ok := data.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("parseFindNodeResponse")
+	}
+	r, ok := resp["r"].(map[string]interface{})
+	if !ok {
+		return nil, errors.New("parseFindNodeResponse")
+	}
+	nodes, ok := r["nodes"].(string)
+	if !ok {
+		return nil, errors.New("parseFindNodeResponse")
+	}
 
-	return resp, err
+	return []byte(nodes), nil
 }
 
 func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
@@ -113,11 +118,11 @@ loop:
 		}
 		if n > 0 {
 			m1.Mark(1)
-			resp, err := parseFindNodeResponse(b2[:])
+			nodes, err := parseFindNodeResponse(b2[:])
 			if err != nil {
 				continue
 			}
-			addrs := parseNodeAddresses(resp)
+			addrs := parseNodeAddresses(nodes)
 			m2.Mark(int64(len(addrs)))
 
 			for _, v := range addrs {
