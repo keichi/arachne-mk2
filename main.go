@@ -2,21 +2,16 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"github.com/Workiva/go-datastructures/queue"
 	"github.com/davecheney/profile"
 	bencode "github.com/jackpal/bencode-go"
 	metrics "github.com/rcrowley/go-metrics"
-	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/syndtr/goleveldb/leveldb/filter"
-	"github.com/syndtr/goleveldb/leveldb/opt"
 	"log"
 	"math/rand"
 	"net"
 	"os"
 	"runtime"
-	"strings"
 	"time"
 )
 
@@ -69,28 +64,13 @@ func buildFindNodeRequest() ([]byte, error) {
 }
 
 func parseNodeAddresses(resp *krpcFindNodeResponse) []*net.UDPAddr {
-	r := strings.NewReader(resp.Response.Nodes)
+	nodes := resp.Response.Nodes
 	var addrs []*net.UDPAddr
 
-	for {
+	for i := 20; i <= len(nodes)-6; i += 26 {
 		addr := new(net.UDPAddr)
-
-		var id [20]byte
-		if err := binary.Read(r, binary.BigEndian, &id); err != nil {
-			break
-		}
-
-		var ip [4]byte
-		if err := binary.Read(r, binary.BigEndian, &ip); err != nil {
-			break
-		}
-		addr.IP = ip[:]
-
-		var port uint16
-		if err := binary.Read(r, binary.BigEndian, &port); err != nil {
-			break
-		}
-		addr.Port = int(port)
+		addr.IP = net.IP(nodes[i : i+4])
+		addr.Port = (int(nodes[i+4]) << 8) + int(nodes[i+5])
 
 		addrs = append(addrs, addr)
 	}
@@ -107,11 +87,13 @@ func parseFindNodeResponse(b []byte) (*krpcFindNodeResponse, error) {
 	return resp, err
 }
 
-func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, db *leveldb.DB, quit chan bool) {
+func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
 	m1 := metrics.NewMeter()
 	metrics.Register("rxPacketPerSec", m1)
 	m2 := metrics.NewMeter()
 	metrics.Register("nodesPacketPerSec", m2)
+
+	visited := map[string]bool{}
 
 	fmt.Println("Starting receive loop...")
 
@@ -138,16 +120,14 @@ loop:
 			addrs := parseNodeAddresses(resp)
 			m2.Mark(int64(len(addrs)))
 
-			batch := new(leveldb.Batch)
-			for i, v := range addrs {
-				key := []byte(resp.Response.Nodes[i*26+20 : i*26+26])
+			for _, v := range addrs {
+				key := v.IP.String()
 
-				if has, _ := db.Has(key, nil); !has {
+				if _, has := visited[key]; !has {
 					q.Offer(v)
-					batch.Put(key, make([]byte, 0))
+					visited[key] = true
 				}
 			}
-			db.Write(batch, nil)
 		}
 	}
 }
@@ -190,17 +170,6 @@ func main() {
 
 	q := queue.NewRingBuffer(1 << 17)
 
-	o := &opt.Options{
-		Compression:        opt.NoCompression,
-		BlockCacheCapacity: 500 * 1024 * 1024,
-		Filter:             filter.NewBloomFilter(10),
-	}
-	db, err := leveldb.OpenFile("leveldb", o)
-	if err != nil {
-		panic(err)
-	}
-	defer db.Close()
-
 	for _, node := range boostrapNodes {
 		if addr, err := net.ResolveUDPAddr("udp4", node); err == nil {
 			q.Put(addr)
@@ -216,14 +185,14 @@ func main() {
 	conn.SetReadBuffer(100 * 1024 * 1024)
 
 	qc1 := make(chan bool)
-	go recvLoop(q, conn, db, qc1)
+	go recvLoop(q, conn, qc1)
 
 	qc2 := make(chan bool)
 	go sendLoop(q, conn, qc2)
 
 	go metrics.Log(metrics.DefaultRegistry, 10*time.Second, log.New(os.Stderr, "metrics: ", log.Lmicroseconds))
 
-	time.Sleep(30 * time.Minute)
+	time.Sleep(1 * time.Minute)
 
 	qc1 <- true
 	qc2 <- true
