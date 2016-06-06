@@ -102,7 +102,7 @@ loop:
 			m2.Mark(int64(len(addrs)))
 
 			for _, v := range addrs {
-				key := v.IP.String()
+				key := string([]byte(v.IP))
 
 				if _, has := visited[key]; !has {
 					q.Offer(v)
