@@ -5,10 +5,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/Workiva/go-datastructures/queue"
-	"github.com/boltdb/bolt"
 	"github.com/davecheney/profile"
 	bencode "github.com/jackpal/bencode-go"
 	metrics "github.com/rcrowley/go-metrics"
+	"github.com/syndtr/goleveldb/leveldb"
 	"log"
 	"math/rand"
 	"net"
@@ -105,13 +105,21 @@ func parseFindNodeResponse(b []byte) (*krpcFindNodeResponse, error) {
 	return resp, err
 }
 
-func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, db *bolt.DB) {
+func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, db *leveldb.DB, quit chan bool) {
 	m1 := metrics.NewMeter()
 	metrics.Register("rxPacketPerSec", m1)
 	m2 := metrics.NewMeter()
 	metrics.Register("nodesPacketPerSec", m2)
 
+loop:
 	for {
+		select {
+		case <-quit:
+			fmt.Println("Quitting receive loop...")
+			break loop
+		default:
+		}
+
 		var b2 [1024]byte
 		n, _, err := conn.ReadFromUDP(b2[:])
 		if n == 0 || err != nil {
@@ -126,31 +134,36 @@ func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, db *bolt.DB) {
 			addrs := parseNodeAddresses(resp)
 			m2.Mark(int64(len(addrs)))
 
+			batch := new(leveldb.Batch)
 			for i, v := range addrs {
 				q.Offer(v)
+				key := []byte(resp.Response.Nodes[i*26+20 : i*26+26])
 
-				db.Update(func(tx *bolt.Tx) error {
-					b := tx.Bucket([]byte("visited"))
-					key := []byte(resp.Response.Nodes[i*26+20 : i*26+26])
-
-					if b.Get(key) == nil {
-						b.Put(key, make([]byte, 0))
-					}
-					return nil
-				})
+				if has, _ := db.Has(key, nil); !has {
+					batch.Put(key, make([]byte, 0))
+				}
 			}
+			db.Write(batch, nil)
 		}
 	}
 }
 
-func sendLoop(q *queue.RingBuffer, conn *net.UDPConn) {
+func sendLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
 	m := metrics.NewMeter()
 	metrics.Register("txPacketPerSec", m)
 
 	g := metrics.NewGauge()
 	metrics.Register("rngBufLen", g)
 
+loop:
 	for {
+		select {
+		case <-quit:
+			fmt.Println("Quitting send loop...")
+			break loop
+		default:
+		}
+
 		g.Update(int64(q.Len()))
 
 		v, _ := q.Get()
@@ -171,15 +184,11 @@ func main() {
 
 	q := queue.NewRingBuffer(1 << 17)
 
-	db, err := bolt.Open("arachne.db", 0600, nil)
+	db, err := leveldb.OpenFile("leveldb", nil)
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
-	db.Update(func(tx *bolt.Tx) error {
-		tx.CreateBucket([]byte("visited"))
-		return nil
-	})
 
 	for _, node := range boostrapNodes {
 		if addr, err := net.ResolveUDPAddr("udp4", node); err == nil {
@@ -195,9 +204,16 @@ func main() {
 	}
 	conn.SetReadBuffer(100 * 1024 * 1024)
 
-	go recvLoop(q, conn, db)
-	go sendLoop(q, conn)
+	qc1 := make(chan bool)
+	go recvLoop(q, conn, db, qc1)
+
+	qc2 := make(chan bool)
+	go sendLoop(q, conn, qc2)
+
 	go metrics.Log(metrics.DefaultRegistry, 5*time.Second, log.New(os.Stderr, "metrics: ", log.Lmicroseconds))
 
-	time.Sleep(5 * time.Minute)
+	time.Sleep(1 * time.Minute)
+
+	qc1 <- true
+	qc2 <- true
 }
