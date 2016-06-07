@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"strconv"
 	"time"
 )
 
@@ -46,16 +47,25 @@ func parseNodeAddresses(nodes []byte) []*net.UDPAddr {
 	return addrs
 }
 
-var regexpNodes = regexp.MustCompile(`5:nodes208:`)
+var regexpNodes = regexp.MustCompile(`5:nodes([0-9]+):`)
 
 func parseFindNodeResponse(b []byte) ([]byte, error) {
-	matches := regexpNodes.FindSubmatchIndex(b)
-
+	matches := regexpNodes.FindSubmatch(b)
 	if len(matches) != 2 {
 		return nil, errors.New("parseFindNodeResponse")
 	}
 
-	return b[matches[1] : matches[1]+208], nil
+	nodesLen, _ := strconv.Atoi(string(matches[1]))
+	if nodesLen == 0 {
+		return nil, errors.New("parseFindNodeResponse")
+	}
+
+	indices := regexpNodes.FindSubmatchIndex(b)
+	if len(indices) < 2 {
+		return nil, errors.New("parseFindNodeResponse")
+	}
+
+	return b[indices[1] : indices[1]+nodesLen], nil
 }
 
 func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
@@ -77,7 +87,7 @@ loop:
 		default:
 		}
 
-		var b2 [1024]byte
+		var b2 [64 * 1024]byte
 		n, _, err := conn.ReadFromUDP(b2[:])
 		if n == 0 || err != nil {
 			panic(err)
