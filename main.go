@@ -70,9 +70,7 @@ func parseFindNodeResponse(b []byte) ([]byte, error) {
 
 func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
 	m1 := metrics.NewMeter()
-	metrics.Register("skipNodesPerSec", m1)
-	m2 := metrics.NewMeter()
-	metrics.Register("nodesPerSec", m2)
+	metrics.Register("nodesPerSec", m1)
 
 	var buf [64 * 1024]byte
 	visited := make(map[string]byte)
@@ -98,13 +96,17 @@ loop:
 
 			for _, v := range addrs {
 				key := string([]byte(v.IP))
+				count := visited[key]
 
-				if visited[key] < 10 {
+				if count == 0 {
+					m1.Mark(1)
+				}
+
+				if count < 10 {
 					m2.Mark(1)
 					q.Offer(v)
 					visited[key] += 1
-				} else {
-					m1.Mark(1)
+
 				}
 			}
 		}
@@ -118,9 +120,6 @@ func sendLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
 	m := metrics.NewMeter()
 	metrics.Register("txPacketPerSec", m)
 
-	g := metrics.NewGauge()
-	metrics.Register("rngBufLen", g)
-
 	fmt.Println("Starting send loop...")
 
 loop:
@@ -130,8 +129,6 @@ loop:
 			break loop
 		default:
 		}
-
-		g.Update(int64(q.Len()))
 
 		v, err := q.Get()
 		if err != nil {
