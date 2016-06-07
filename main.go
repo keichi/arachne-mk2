@@ -6,10 +6,10 @@ import (
 	"github.com/Workiva/go-datastructures/queue"
 	"github.com/davecheney/profile"
 	metrics "github.com/rcrowley/go-metrics"
-	"log"
+	// "log"
 	"math/rand"
 	"net"
-	"os"
+	// "os"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -23,8 +23,8 @@ var boostrapNodes = []string{
 }
 
 func buildFindNodeRequest() []byte {
-	buf := []byte("d1:ad2:i" +
-		"d20:                    6:target20:                    e" +
+	buf := []byte("d1:a" +
+		"d2:id20:                    6:target20:                    e" +
 		"1:q9:find_node1:t4:    1:y1:qe")
 	rand.Read(buf[12 : 12+20])
 	rand.Read(buf[43 : 43+20])
@@ -38,7 +38,7 @@ func parseNodeAddresses(nodes []byte) []*net.UDPAddr {
 
 	for i := 20; i <= len(nodes)-6; i += 26 {
 		addr := new(net.UDPAddr)
-		addr.IP = net.IP(nodes[i : i+4])
+		addr.IP = net.IPv4(nodes[i], nodes[i+1], nodes[i+2], nodes[i+3])
 		addr.Port = (int(nodes[i+4]) << 8) + int(nodes[i+5])
 
 		addrs = append(addrs, addr)
@@ -70,11 +70,12 @@ func parseFindNodeResponse(b []byte) ([]byte, error) {
 
 func recvLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
 	m1 := metrics.NewMeter()
-	metrics.Register("rxPacketPerSec", m1)
+	metrics.Register("skipNodesPerSec", m1)
 	m2 := metrics.NewMeter()
-	metrics.Register("nodesPacketPerSec", m2)
+	metrics.Register("nodesPerSec", m2)
 
-	visited := map[string]bool{}
+	var buf [64 * 1024]byte
+	visited := make(map[string]byte)
 
 	fmt.Println("Starting receive loop...")
 
@@ -82,35 +83,35 @@ loop:
 	for {
 		select {
 		case <-quit:
-			fmt.Println("Quitting receive loop...")
 			break loop
 		default:
 		}
 
-		var b2 [64 * 1024]byte
-		n, _, err := conn.ReadFromUDP(b2[:])
-		if n == 0 || err != nil {
-			panic(err)
-		}
-		if n > 0 {
-			m1.Mark(1)
-			nodes, err := parseFindNodeResponse(b2[:])
+		if n, _, err := conn.ReadFromUDP(buf[:]); n == 0 || err != nil {
+			continue
+		} else {
+			nodes, err := parseFindNodeResponse(buf[:])
 			if err != nil {
 				continue
 			}
 			addrs := parseNodeAddresses(nodes)
-			m2.Mark(int64(len(addrs)))
 
 			for _, v := range addrs {
 				key := string([]byte(v.IP))
 
-				if _, has := visited[key]; !has {
+				if visited[key] < 10 {
+					m2.Mark(1)
 					q.Offer(v)
-					visited[key] = true
+					visited[key] += 1
+				} else {
+					m1.Mark(1)
 				}
 			}
 		}
 	}
+
+	fmt.Println("Quitting receive loop...")
+	fmt.Printf("Number of nodes visited: %d\n", len(visited))
 }
 
 func sendLoop(q *queue.RingBuffer, conn *net.UDPConn, quit chan bool) {
@@ -126,20 +127,32 @@ loop:
 	for {
 		select {
 		case <-quit:
-			fmt.Println("Quitting send loop...")
 			break loop
 		default:
 		}
 
 		g.Update(int64(q.Len()))
 
-		v, _ := q.Get()
+		v, err := q.Get()
+		if err != nil {
+			break loop
+		}
 		addr := v.(*net.UDPAddr)
 		b := buildFindNodeRequest()
 
 		conn.WriteToUDP(b, addr)
 
 		m.Mark(1)
+	}
+
+	fmt.Println("Quitting send loop...")
+}
+
+func seedQueue(q *queue.RingBuffer) {
+	for _, node := range boostrapNodes {
+		if addr, err := net.ResolveUDPAddr("udp4", node); err == nil {
+			q.Offer(addr)
+		}
 	}
 }
 
@@ -149,13 +162,9 @@ func main() {
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	q := queue.NewRingBuffer(1 << 17)
+	q := queue.NewRingBuffer(1 << 20)
 
-	for _, node := range boostrapNodes {
-		if addr, err := net.ResolveUDPAddr("udp4", node); err == nil {
-			q.Put(addr)
-		}
-	}
+	seedQueue(q)
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{})
 	fmt.Println("Listening at:", conn.LocalAddr())
@@ -171,10 +180,11 @@ func main() {
 	qc2 := make(chan bool)
 	go sendLoop(q, conn, qc2)
 
-	go metrics.Log(metrics.DefaultRegistry, 10*time.Second, log.New(os.Stderr, "metrics: ", log.Lmicroseconds))
+	//	go metrics.Log(metrics.DefaultRegistry, 5*time.Second, log.New(os.Stderr, "metrics: ", log.Lmicroseconds))
 
-	time.Sleep(1 * time.Minute)
+	time.Sleep(20 * time.Minute)
 
+	q.Dispose()
 	qc1 <- true
 	qc2 <- true
 }
